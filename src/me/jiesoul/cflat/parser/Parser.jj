@@ -1,0 +1,562 @@
+options {
+    STATIC = false;
+    DEBUG_PARSER = true;
+    UNICODE_INPUT = true;
+    JDK_VERSION = "1.8";
+}
+
+TOKEN: {
+      <VOID : "void">
+    | <CHAR : "char">
+    | <SHORT : "short">
+    | <INT : "int">
+    | <LONG : "long">
+    | <STRUCT : "struct">
+    | <UNION : "union">
+    | <ENUM : "enum">
+    | <STATIC : "static">
+    | <EXTERN : "extern">
+    | <CONST : "const">
+    | <SIGNED : "signed">
+    | <UNSIGNED : "unsigned">
+    | <IF : "if">
+    | <ELSE : "else">
+    | <SWITCH : "switch">
+    | <CASE : "case">
+    | <DEFAULT_ : "default">
+    | <WHILE : "while">
+    | <DO : "do">
+    | <FOR : "for">
+    | <RETURN : "return">
+    | <BREAK : "break">
+    | <CONTINUE : "continue">
+    | <GOTO : "goto">
+    | <TYPEDEF : "typedef">
+    | <IMPORT : "import">
+    | <SIZEOF : "sizeof">
+}
+
+TOKEN: {
+    <IDENTIFIER: ["a"-"z", "A"-"Z", "_"] (["a"-"z", "A"-"Z", "_", "0"-"9"])*>
+}
+
+TOKEN: {
+    <INTEGER: ["1"-"9"] (["0"-"9"])* ("U")? ("L")?
+            | "0" ["x", "X"] (["0"-"9", "a"-"f", "A"-"F"])+ ("U")? ("L")?
+            | "0" (["0"-"7"])* ("U")? ("L")?
+            >
+}
+
+SPECIAL_TOKEN: { <SPACES: ([" ", "\t", "\n", "\r", "\f"])+> }
+
+SPECIAL_TOKEN: {
+    <LINE_COMMENT: "//" (~["\n", "\r"])* ("\n" | "\r\n" | "\r")?>
+}
+
+MORE: { <"/*"> : IN_BLOCK_COMMENT }
+<IN_BLOCK_COMMENT> MORE: { <~[]> }
+<IN_BLOCK_COMMENT> SPECIAL_TOKEN: { <BLOCK_COMMENT: "*/"> : DEFAULT }
+
+MORE: { <"\""> : IN_STRING } // 规则 1
+<IN_STRING> MORE: {
+<(~["\"", "\\", "\n", "\r"])+> // 规则 2
+| <"\\" (["0"-"7"]){3}> // 规则 3
+| <"\\" ~[]> // 规则 4
+}
+<IN_STRING> TOKEN: { <STRING: "\""> : DEFAULT } // 规则 5
+
+MORE: { <"'"> : IN_CHARACTER } // 规则 1
+<IN_CHARACTER> MORE: {
+<~["'", "\\", "\n", "\r"]> : CHARACTER_TERM // 规则 2
+| <"\\" (["0"-"7"]){3}> : CHARACTER_TERM // 规则 3
+| <"\\" ~[]> : CHARACTER_TERM // 规则 4
+}
+<CHARACTER_TERM> TOKEN: { <CHARACTER: "'"> : DEFAULT } // 规则 5
+
+// 表示一个文件整体
+AST compilation_unit():
+{
+    Token t;
+    Declaraions impdecls, decls;
+}
+{
+        {
+            t = getToken(1);
+        }
+    impdecls=import_stmts() decls=top_defs() <EOF>
+        {
+            decls.add(impdecls);
+            return new AST(location(t), decls);
+        }
+}
+
+//import 声明
+import_stmts(): {}
+{
+    (import_stmt())*
+}
+
+import_stmt(): {}
+{
+    <IMPORT> name() ("." name())* ";"
+}
+
+name(): {}
+{
+    <IDENTIFIER>
+}
+
+Declarations top_defs():
+{
+    Declarations decls = new Declaration();
+    DefinedFunction defun;
+    List<DefinedVariable> devars;
+    Constant defconst;
+    StructNode defstruct;
+    UnionNode defunion;
+    TypedefNode typedef;
+}
+{
+    (LOOKAHEAD(storage() typeref() <IDENTIFIER> "(")
+     defun=defun() { decls.addDefun(defun); }         //函数定义
+    | LOOKAHEAD(3)
+      defvars=defvars() { decls.addDevars(devars); }        //变量定义
+    | defconst=defconst() { decls.addDefconst(defconst); }       //常量定义
+    | defstruct=defstruct()  { decls.adddefstruct(defstruct);}      //结构体定义
+    | defunion=defunion()   { decls.addDefunion(defunion);}      //联合体定义
+    | typedef=typedef() { decls.addTypedef(typedef);}
+    )*
+        {
+            return decls;
+        }
+}
+
+List<DefinedVariable> defvars():
+{
+    List<DefinedVariable> defs = new ArrayList<DefinedVariable>();
+    boolean priv;
+    TypeNode type;
+    String name;
+    ExprNode init = null;
+}
+{
+    priv=storage() type=type() name=name() ["=" init=expr()]
+        {
+            defs.add(new DefinedVariable(priv, type, name, init));
+        }
+    ("," name=name() ["=" init=expr()]
+        {
+            defs.add(new DefinedVariable(priv, type, name, init));
+        }
+    )*
+    ";" { return defs; }
+}
+
+storage(): {}
+{
+    [<STATIC>]
+}
+
+DefinedFunction defun():
+{
+    boolean priv;
+    TypeRef ret;
+    String n;
+    Params ps;
+    BlockNode body;
+}
+{
+    priv=storage() ret=typedef() n=name() "(" ps=params() ")" body=block()
+        {
+            TypeRef t = new FunctionTypeRef(ret, ps.parametersTypeRef());
+            return new DefinedFunction(priv, new TypeNode(t), n, ps, body);
+        }
+}
+
+params(): {}
+{
+      LOOKAHEAD(<VOID> ")") <VOID>  //无参数
+    | fixedparams() ["," "..."]     //定长或变长
+}
+
+fixedparams(): {}
+{
+    param() (LOOKAHEAD(2) "," param())*
+}
+
+param(): {}
+{
+    type() name()
+}
+
+BlockNode block():
+{
+    Token t;
+    List<DefinedVariable> vars;
+    List<StmtNode> stmts;
+}
+{
+    t="{" vars=defvar_list() stmts=stms() "}"
+        {
+            return new BlockNode(location(t), vars, stmts);
+        }
+}
+
+List<DefinedVariable> defvar_list():
+{
+    List<DefinedVariable> result = new ArrayList<DefinedVariable>();
+    List<DefinedVariable> vars;
+}
+{
+    ( vars=defvars() { result.addAll(vars); })*
+        {
+            return result;
+        }
+}
+
+defstruct(): {}
+{
+    <STRUCT> name() member_list() ";"
+}
+
+defunion(): {}
+{
+    <UNION> name() member_list() ";"
+}
+
+member_list(): {}
+{
+    "{" (slot() ";")* "}"
+}
+
+typedef(): {}
+{
+    <TYPEDEF> typedef() <IDENTIFIER> ";"
+}
+
+type(): {}
+{
+    typeref()
+}
+
+typeref(): {}
+{
+    typeref_base()
+    ( LOOKAHEAD(2) "[" "]"       //不定长数组
+    | "[" <INTEGER> "]"         // 定长数组
+    | "*"                       //指针
+    | "(" param_typerefs() ")"  //函数指针
+    )*
+}
+
+typeref_base(): {}
+{
+      <VOID>
+    | <CHAR>
+    | <SHORT>
+    | <INT>
+    | <LONG>
+    | LOOKAHEAD(2) <UNSIGNED> <CHAR>
+    | LOOKAHEAD(2) <UNSIGNED> <SHORT>
+    | LOOKAHEAD(2) <UNSIGNED> <INT>
+    | <UNSIGNED> <LONG>
+    | <STRUCT> <IDENTIFIER>
+    | <UNION> <IDENTIFIER>
+    | LOOKAHEAD({isType(getToken(1).image)}) <IDENTIFIER>
+}
+
+List<StmtNode> stmts():
+{
+    List<StmtNode> ss = new ArrayList<StmtNode>();
+    StmtNode s;
+}
+{
+    (s=stmt() { if (s != null) ss.add(s); })*
+        {
+            return ss;
+        }
+}
+
+stmt(): {}
+{
+    ( ";"
+    | LOOKAHEAD(2) labeled_stmt()
+    | expr() ";"
+    | block()
+    | if_stmt()
+    | while_stmt()
+    | dowhile_stmt()
+    | for_stmt()
+    | switch_stmt()
+    | break_stmt()
+    | continue_stmt()
+    | goto_stmt()
+    | return_stmt()
+    )
+}
+
+IfNode if_stmt():
+{
+    Token t;
+    ExprNode cond;
+    StmtNode thenBody, elseBody = null;
+}
+{
+    t=<IF> "(" cond=expr() ")" thenBody=stmt() [LOOKAHEAD(1) <ELSE> elseBody=sstmt()]
+        {
+            return new IfNode(location(t),cond,thenBody,elseBody);
+        }
+}
+
+while_stmt():
+{
+    Token t;
+    ExprNode cond;
+    StmtNode body;
+}
+{
+    t=<WHILE> "(" cond=expr() ")" body=stmt() { return new WhileNode(location(t), cond, body); }
+}
+
+for_stmt(): {}
+{
+    <FOR> "(" [expr()] ";" [expr()] ";" [expr()] ")" stmt()
+}
+
+break_stmt(): {}
+{
+    <BREAK> ";"
+}
+
+return_stmt(): {}
+{
+      LOOKAHEAD(2) <RETURN> ";"     //函数没有返回值
+    | <RETURN> expr() ";"           //函数有返回值
+}
+
+ExprNode expr():
+{
+    ExprNode lhs, rhs, expr;
+    String op;
+}
+{
+      LOOKAHEAD(term() "=")
+      lhs=term() "=" rhs=expr() { return new AssignNode(lhs, rhs); }
+    | LOOKAHEAD(term() opassign_op())
+      lhs=term() opassign_op() rhs=expr() { return new OpAssignNode(lhs, op, rhs); }
+    | epxr=expr10() { return expr; }
+}
+
+opassign_op(): {}
+{
+    ( "+=" {return "+"; }
+    | "-=" {return "-=";}
+    | "*=" {return "*=";}
+    | "/=" {return "/=";}
+    | "%=" {return "%/";}
+    | "&=" {return "&=";}
+    | "|=" {return "|=";}
+    | "^=" {return "^=";}
+    | "<<=" {return "<<=";}
+    | ">>=" {return ">>=";}
+    )
+}
+
+ExprNode expr10():
+{ ExprNode c, t, e; }
+{
+    c=expr9() ["?" t=expr() ":" e=expr10() { return new CondExprNode(c, t, e); }]
+        {
+            return c;
+        }
+}
+
+ExprNode expr9():
+{ ExprNode l, r; }
+{
+    l=expr8() ("||" r=expr8() { l = new LogicalOrNode(l, r); })*
+        {
+            return l;
+        }
+}
+
+ExprNode expr8():
+{ ExprNode l, r; }
+{
+    l=expr7() ("&&" r=expr7() { l = new LogicalAndNode(l, r); })*
+        {
+            return l;
+        }
+}
+
+expr7():
+{ ExprNode l, r; }
+{
+    l=expr6() ( ">" r=expr6() {return new BinaryOpNode(l,">",r); }
+              | "<" r=expr6() {return new BinaryOpNode(l,"<",r); }
+              | ">=" r=expr6() {return new BinaryOpNode(l,">=",r); }
+              | "<=" r=expr6() {return new BinaryOpNode(l,"<=",r); }
+              | "==" r=expr6() {return new BinaryOpNode(l,"==",r); }
+              | "!=" r=expr6() {return new BinaryOpNode(l,"!=",r); }
+        )*
+}
+
+expr6():
+{ ExprNode l, r; }
+{
+    l=expr5() ("|" r=expr5() {return new BinaryOpNode(l,"|",r); }
+              )*
+    {
+       return l;
+    }
+}
+
+expr5():
+{ ExprNode l, r; }
+{
+    l=expr4() ("^" r=expr4() {return new BinaryOpNode(l,"^",r); }
+              )*
+      {
+         return l;
+      }
+}
+
+expr4():
+{ ExprNode l, r; }
+{
+    l=expr3() ("&" r=expr3() {return new BinaryOpNode(l,"&",r); }
+              )*
+      {
+        return l;
+      }
+}
+
+expr3():
+{ ExprNode l, r; }
+{
+    l=expr2() ( ">>" r=expr2() { l = new BinaryOpNode(l, ">>", r); }
+              | "<<" r=expr2() { l = new BinaryOpNode(l, ">>", r); }
+              )*
+      {
+        return l;
+      }
+}
+
+ExprNode expr2():
+{
+    ExprNode l, r;
+}
+{
+    l=expr1()   ( "+" r=expr1() { l = new BinaryOpNode(l, "+", r); }
+               | "-" r=expr1() { l = new BinaryOpNode(l, "-", r); }
+               )*
+       {
+            return l;
+       }
+}
+
+ExprNode expr1():
+{
+    ExprNode l, r;
+}
+{
+    l=term()   ( "*" r=term() { l = new BinaryOpNode(l, "*", r); }
+               | "/" r=term() { l = new BinaryOpNode(l, "/", r); }
+               | "%" r=term() { l = new BinaryOpNode(l, "%", r); }
+               )*
+       {
+            return l;
+       }
+}
+
+ExprNode term():
+{
+    TypeNode t;
+    ExprNode n;
+}
+{
+      LOOKAHEAD("(" type() "(" type() ")" type() ")" term()) { return new CastNode(t, n); }
+    | unary() { return n; }
+}
+
+ExprNode unary():
+{
+    ExprNode n;
+    TypeNode t;
+}
+{
+      "++" n=unary() { return new PrefixOpNode("++", n); } // 前置 ++
+    | "--" n=unary() { return new PrefixOpNode("--", n); } // 前置 --
+    | "+" n=term() { return new UnaryOpNode("+", n); }// 一元 +
+    | "-" n=term() { return new UnaryOpNode("-", n); }// 一元 -
+    | "!" n=term() { return new UnaryOpNode("!", n); }// 逻辑非
+    | "~" n=term() { return new UnaryOpNode("~", n); }// 按位取反
+    | "*" n=term() { return newDereferenceNode(n); }// 指针引用（间接引用）
+    | "&" n=term() { return new AddressNode(n); }// 地址运算符
+    | LOOKAHEAD(3) <SIZEOF> "(" t=type() ")" // sizeof( 类型 )
+        {
+            return enw SizeofTypeNode(t, size_t());
+        }
+    | <SIZEOF> n=unary() // sizeof 表达式
+        {
+            return new SizeofExprNode(n, size_t());
+        }
+    | n=postfix() {return n;}
+}
+
+ExprNode postfix():
+{
+    ExprNode expr, idx;
+    String memb;
+    List<ExprNode> args;
+}
+{
+    expr=primary()
+    ( "++" { expr = new SuffixOpNode("++", n); } // 后置 ++
+    | "--" { expr = new SuffixOpNode("--", n); } // 后置 --
+    | "[" idx=expr() "]" { expr = new ArefNode(expr, idx); } // 数组引用
+    | "." name() { expr = new MemberNode(expr, memb); } // 结构体或联合体的成员的引用
+    | "->" memb=name() { expr = new PtrMemberNode(expr, memb); } // 通过指针的结构体或联合体的成员的引用
+    | "(" args=args() ")" { expr = new FuncallNode(expr, args); } // 函数调用
+    )*
+        {
+            return expr;
+        }
+}
+
+args(): {}
+{
+    [ expr() ("," expr())* ]
+}
+
+ExprNode primary():
+{
+    Token t;
+    ExprNode n;
+}
+{
+      t=<INTEGER>
+        {
+            return integerNode(location(t), t.image);
+        }
+    | t=<CHARACTER>
+        {
+            return new IntegerLiteralNode(location(t),
+                                            IntegerTypeRef.charRef(),
+                                            characterCode(t.image));
+        }
+    | t=<STRING>
+        {
+            return new StringLiteralNode(location(t),
+                                            new PointerTypeRef(IntegerTypeRef.charRef()),
+                                            stringValue(t.image));
+        }
+    | t=<IDENTIFIER>
+        {
+            return new VariableNode(location(t), t.image);
+        }
+    | "(" expr() ")"
+    {
+        return n;
+    }
+}
