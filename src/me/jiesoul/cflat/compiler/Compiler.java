@@ -8,6 +8,6 @@ public class Compiler {
     static final public String ProgramName = "cbc";
     static final public String Version = "1.0.0";
 
-    
+
 
 }
