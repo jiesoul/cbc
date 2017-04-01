@@ -5,6 +5,64 @@ options {
     JDK_VERSION = "1.8";
 }
 
+PARSER_BEGIN(Parser)
+
+public static final String SOURCE_ENCONDIG = "UTF-8";
+
+private String sourceName;
+private LibraryLoader loader;
+private ErrorHandler errorHandler;
+private Set<String> knownTypedefs;
+
+public Parser(Reader s, String name, LibraryLoader loader,
+              ErrorHandler errorHandler, boolean debug) {
+    this(s);
+    this.sourceName = name;
+    this.loader = loader;
+    this.errorHandler = errorHandler;
+    this.knownTypedefs = new HashSet<String>();
+    if(debug) {
+        enable_tracing();
+    } else {
+        disable_tracing();
+    }
+}
+
+public static AST parseFile(File file, LibraryLoader loader,
+                            ErrorHandler errorHandler, boolean debug) {
+
+     return newFileParser(file, loader, errorHandler, debug);
+}
+
+public static Parser newFileParser(File file,
+                                   LibraryLoader loader,
+                                   ErrorHandler errorHandler,
+                                   boolean debug)
+                                   throws FileException {
+    try {
+        BufferReader r = new BufferReader(new InputStreamReader(new FileInputStream(file), SOURCE_CODING));
+        return new Parser(r, file.getPath(), loader, errorHandler, debug);
+    } catch (FileNotFoundException ex) {
+        throw new FileException(ex.getMessage());
+    } catch (UnsupportEncodingException ex) {
+        throw new Error("UTF-8 is not supported??: " + ex.getMessage());
+    }
+}
+
+public AST parse() throws SyntaxException {
+    try {
+        return compilation_unit();
+    } catch (TokenMgrError err) {
+        throw new SyntaxException(err.getMessage());
+    } catch (ParseException ex) {
+        throw new SyntaxException(ex.getMessage());
+    } catch (LookaheadSuccess err) {
+        throw new SyntaxException("syntax error");
+    }
+}
+
+PARSER_END(Parser)
+
 TOKEN: {
       <VOID : "void">
     | <CHAR : "char">
@@ -91,9 +149,28 @@ AST compilation_unit():
 }
 
 //import 声明
-import_stmts(): {}
+Declarations import_stmts():
 {
-    (import_stmt())*
+    String libid;
+    Declarations impdecls = new Declarations();
+}
+{
+    (libid=import_stmt()
+        {
+            try {
+                Declarations decls = loader.loadLibrary(libid, errorHandler);
+                if(decls != null) {
+                    impdecls.add(decls);
+                    addKnownTypedefs(decls.typeders());
+                }
+            } catch (CompileException ex) {
+                throw new ParseException(ex.getMessage());
+            }
+        }
+    )*
+        {
+            return impdecls;
+        }
 }
 
 import_stmt(): {}
